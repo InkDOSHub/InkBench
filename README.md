@@ -21,7 +21,7 @@
 
 | Path | What |
 |---|---|
-| `index.html`, `abas.js` | Page and tabs |
+| `index.html`, `tabs.js` | Page and tabs |
 | `bench.js` | Benchmark (current version); `v9.html` + `bench-v9.js` keep version 9 |
 | `app.js` | Full browser tests |
 | `aquarium/`, `motionmark/` | Local copies of the graphics benchmarks |

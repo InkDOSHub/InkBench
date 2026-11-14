@@ -3,43 +3,43 @@
 (function () {
   "use strict";
   var SUITE_VERSION = 9;
-  var lancados = [];
-  if (window.launchQueue) launchQueue.setConsumer(function (p) { lancados.push((p.files || []).map(function (f) { return f.name; }).join(",") || "no files"); });
+  var launched = [];
+  if (window.launchQueue) launchQueue.setConsumer(function (p) { launched.push((p.files || []).map(function (f) { return f.name; }).join(",") || "no files"); });
   var res = {}, $ = function (id) { return document.getElementById(id); };
-  var tabela = $("tabela");
+  var table = $("tabela");
 
   function put(id, ok, value) {
     res[id] = { ok: ok, value: value === undefined ? null : value };
     var tr = document.getElementById("t-" + id);
-    if (!tr) { tr = document.createElement("tr"); tr.id = "t-" + id; tabela.appendChild(tr); }
+    if (!tr) { tr = document.createElement("tr"); tr.id = "t-" + id; table.appendChild(tr); }
     var cls = ok === true ? "ok" : ok === false ? "no" : "na";
     var txt = value == null ? "" : typeof value === "string" ? value : JSON.stringify(value);
     tr.innerHTML = "<td></td><td></td>";
     tr.cells[0].textContent = id; tr.cells[0].className = cls;
     tr.cells[1].textContent = (ok === true ? "yes " : ok === false ? "no " : "") + txt;
-    salvar();
+    save();
   }
   // Every result is kept in localStorage, so nothing is lost if the tab reloads (memory test, crash)
-  var SALVO = "xeos-tests-results";
-  function salvar() { try { localStorage.setItem(SALVO, JSON.stringify(res)); } catch (e) {} }
+  var SAVED = "xeos-tests-results";
+  function save() { try { localStorage.setItem(SAVED, JSON.stringify(res)); } catch (e) {} }
   function has(id, v) { put(id, !!v); }
   function err(e) { return (e && (e.name + ": " + e.message)) || String(e); }
   function timeout(p, ms) {
     return Promise.race([p, new Promise(function (_, r) { setTimeout(function () { r(new Error("timeout " + ms + " ms")); }, ms); })]);
   }
-  var ativos = 0;
+  var active = 0;
   async function t(id, fn, ms) {
     var t0 = performance.now(), est = $("estado");
-    ativos++; est.textContent = "⏳ Running " + id + "...";
+    active++; est.textContent = "⏳ Running " + id + "...";
     put(id, null, "running...");
     try { var v = await timeout(Promise.resolve().then(fn), ms || 5000); put(id, v === false ? false : true, v === true || v === false ? null : v); }
     catch (e) { put(id, false, err(e)); }
     var r = res[id]; if (r) r.ms = Math.round(performance.now() - t0);
-    ativos--; est.textContent = ativos ? est.textContent : "✓ " + id + " done (" + r.ms + " ms)";
+    active--; est.textContent = active ? est.textContent : "✓ " + id + " done (" + r.ms + " ms)";
     var tr = document.getElementById("t-" + id); if (tr && tr.scrollIntoView && !$("rodar").disabled) tr.scrollIntoView({ block: "nearest" });
   }
 
-  async function rodar() {
+  async function runTests() {
     var n = navigator, w = window;
     // environment
     put("env.userAgent", null, n.userAgent);
@@ -155,7 +155,7 @@
     has("css.dvh", CSS.supports("height", "100dvh"));
     has("css.backdropFilter", CSS.supports("backdrop-filter", "blur(1px)") || CSS.supports("-webkit-backdrop-filter", "blur(1px)"));
     has("css.containerQueries", CSS.supports("container-type", "inline-size"));
-    put("pwa.launchedWithFiles", null, lancados.join(" | ") || "none (open a file in XeOS with this app to test)");
+    put("pwa.launchedWithFiles", null, launched.join(" | ") || "none (open a file in XeOS with this app to test)");
     await t("storage.idbSpeed50MB", function () {
       return new Promise(function (ok, no) {
         var r = indexedDB.open("xeos-tests", 1);
@@ -232,7 +232,7 @@
   };
   function worker(code) { return new Worker(URL.createObjectURL(new Blob([code], { type: "text/javascript" }))); }
   var LOOP = "onmessage=function(e){var t0=performance.now(),s=0;for(var i=0;i<e.data;i++)s+=Math.sqrt(i)%7;postMessage([performance.now()-t0,s])}";
-  function carga(k, N) {
+  function load(k, N) {
     var ws = []; for (var i = 0; i < k; i++) ws.push(worker(LOOP));
     var t0 = performance.now();
     return Promise.all(ws.map(function (wk) { return new Promise(function (ok) { wk.onmessage = function () { wk.terminate(); ok(); }; wk.postMessage(N); }); })).then(function () { return performance.now() - t0; });
@@ -240,16 +240,16 @@
   extras.bench = async function () {
     var N = 1e8;
     await t("bench.threads", async function () {
-      var one = await carga(1, N), out = ["1 thread " + Math.round(one) + " ms"];
+      var one = await load(1, N), out = ["1 thread " + Math.round(one) + " ms"];
       var best = 1, bestRate = 1;
-      for (var k of [2, 4, 6, 8, 10, 12, 16]) { var ms = await carga(k, N), sp = k * one / ms; out.push(k + "t " + Math.round(ms) + " ms (" + sp.toFixed(2) + "x)"); if (sp > bestRate * 1.08) { best = k; bestRate = sp; } }
+      for (var k of [2, 4, 6, 8, 10, 12, 16]) { var ms = await load(k, N), sp = k * one / ms; out.push(k + "t " + Math.round(ms) + " ms (" + sp.toFixed(2) + "x)"); if (sp > bestRate * 1.08) { best = k; bestRate = sp; } }
       res["est.cores"] = { ok: null, value: "about " + bestRate.toFixed(1) + " cores of real work (peak at " + best + " threads; hardwareConcurrency says " + navigator.hardwareConcurrency + ")" };
       put("est.cores", null, res["est.cores"].value);
       return out.join(" · ");
     }, 60000);
     await t("bench.sustained20s", async function () {
       var ts = [], end = performance.now() + 20000;
-      while (performance.now() < end) ts.push(await carga(4, 3e7));
+      while (performance.now() < end) ts.push(await load(4, 3e7));
       return ts.length + " rounds · first " + Math.round(ts[0]) + " ms · last " + Math.round(ts[ts.length - 1]) + " ms · slowdown " + (ts[ts.length - 1] / ts[0]).toFixed(2) + "x";
     }, 40000);
     await t("bench.webgpuCompute", async function () {
@@ -330,7 +330,7 @@
   // suite 7
   extras.gpumem = function () {
     return t("gpu.memoryLimit", async function () {
-      var a = await n().gpu.requestAdapter({ powerPreference: "high-performance" }), d = await a.requestDevice({ requiredLimits: { maxBufferSize: a.limits.maxBufferSize } }), bufs = [], mb = 0, lost = false, chunk = new Uint8Array(256 * 1048576); encher(chunk);
+      var a = await n().gpu.requestAdapter({ powerPreference: "high-performance" }), d = await a.requestDevice({ requiredLimits: { maxBufferSize: a.limits.maxBufferSize } }), bufs = [], mb = 0, lost = false, chunk = new Uint8Array(256 * 1048576); fill(chunk);
       d.lost.then(function () { lost = true; });
       try {
         while (mb < 16384 && !lost) {
@@ -349,19 +349,19 @@
     return t("bench.thermal5min", async function () {
       var end = performance.now() + 300000, marks = [], start = performance.now(), last = start, rounds = 0, base = 0;
       while (performance.now() < end) {
-        var ms = await carga(6, 3e7); rounds++; if (!base) base = ms;
+        var ms = await load(6, 3e7); rounds++; if (!base) base = ms;
         if (performance.now() - last >= 30000) { last = performance.now(); marks.push(Math.round((last - start) / 1000) + "s " + (base / ms * 100).toFixed(0) + "%"); $("estado").textContent = "⏳ Thermal test: " + marks[marks.length - 1]; }
       }
       return rounds + " rounds · speed vs start: " + marks.join(" · ");
     }, 330000);
   };
-  var canal = window.BroadcastChannel ? new BroadcastChannel("xeos-tests") : null;
+  var channel = window.BroadcastChannel ? new BroadcastChannel("xeos-tests") : null;
   var EU = Math.random().toString(36).slice(2);
-  if (canal) canal.onmessage = function (e) { if (e.data && e.data.ping && e.data.from !== EU) canal.postMessage({ pong: e.data.ping, to: e.data.from, buf: e.data.buf }); };
+  if (channel) channel.onmessage = function (e) { if (e.data && e.data.ping && e.data.from !== EU) channel.postMessage({ pong: e.data.ping, to: e.data.from, buf: e.data.buf }); };
   extras.janelas = function () {
     return t("win.channel", function () {
       return new Promise(function (ok, no) {
-        if (!canal) return no(new Error("no BroadcastChannel"));
+        if (!channel) return no(new Error("no BroadcastChannel"));
         var times = [], i = 0, t0, big = false;
         var c2 = new BroadcastChannel("xeos-tests");
         c2.onmessage = function (e) {
@@ -377,15 +377,15 @@
     }, 20000);
   };
   // fill with pseudo-random data so iOS cannot compress the memory away
-  function encher(b) { var u = new Uint32Array(b.buffer, b.byteOffset, b.byteLength >> 2), x = (Math.random() * 4294967295) | 1; for (var i = 0; i < u.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; u[i] = x; } }
-  var segurando = [];
-  extras.segurar = function () { return t("mem.hold2GB", function () { for (var i = 0; i < 8; i++) { var b = new Uint8Array(256 * 1048576); encher(b); segurando.push(b); } return "holding 2048 MB in this window (keep it open)"; }, 60000); };
+  function fill(b) { var u = new Uint32Array(b.buffer, b.byteOffset, b.byteLength >> 2), x = (Math.random() * 4294967295) | 1; for (var i = 0; i < u.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; u[i] = x; } }
+  var holding = [];
+  extras.segurar = function () { return t("mem.hold2GB", function () { for (var i = 0; i < 8; i++) { var b = new Uint8Array(256 * 1048576); fill(b); holding.push(b); } return "holding 2048 MB in this window (keep it open)"; }, 60000); };
   extras.memoria = function () {
     return t("mem.limit", async function () {
       var keep = [], mb = 0;
       try {
         while (mb < 8192) {
-          var b = new Uint8Array(256 * 1048576); encher(b); keep.push(b); mb += 256;
+          var b = new Uint8Array(256 * 1048576); fill(b); keep.push(b); mb += 256;
           try { localStorage.setItem("xeos-tests-mem", "reached " + mb + " MB before the page reloaded"); } catch (e) {}
           await new Promise(function (r) { setTimeout(r, 30); });
         }
@@ -508,7 +508,7 @@
   };
   function n() { return navigator; }
 
-  function relatorio() {
+  function report() {
     var num = 1; try { num = +(localStorage.getItem("xeos-tests-run") || 0) + 1; } catch (e) {}
     return {
       report: num, suite: SUITE_VERSION, date: new Date().toISOString(),
@@ -517,7 +517,7 @@
       results: res
     };
   }
-  function nome(r) { return "xeos-" + String(r.report).padStart(3, "0") + "-" + r.date.slice(0, 10) + ".json"; }
+  function name(r) { return "xeos-" + String(r.report).padStart(3, "0") + "-" + r.date.slice(0, 10) + ".json"; }
 
   // ?perf shows only the memory and performance tests
   if (/[?&]perf\b/.test(location.search)) {
@@ -531,19 +531,19 @@
   }
   // "Run all tests": the checks, then every extra test in a row. Left out: the ones that need a choice
   // from the user (file), may reload the page (memory) or need a second window.
-  var SEQUENCIA = ["camera", "tela", "popup", "clipboard", "download", "salvar", "dialogos", "camera4k", "persistir", "tela2",
+  var SEQUENCE = ["camera", "tela", "popup", "clipboard", "download", "salvar", "dialogos", "camera4k", "persistir", "tela2",
     "bench", "reais", "emu", "tresd", "swap", "termico", "fundo", "memoria"];
-  var PARCIAL = "xeos-tests-parcial";
-  function mostrarExtras() { $("extras").hidden = $("notas").hidden = $("saida").hidden = false; }
+  var PARTIAL = "xeos-tests-parcial";
+  function showExtras() { $("extras").hidden = $("notas").hidden = $("saida").hidden = false; }
   $("rodar").addEventListener("click", async function () {
     this.disabled = true; $("parar").hidden = false; $("estado").textContent = "Running...";
-    tabela.textContent = ""; res = {};
-    await rodar();
-    mostrarExtras();
-    for (var i = 0; i < SEQUENCIA.length; i++) {
-      var b = document.querySelector('[data-t="' + SEQUENCIA[i] + '"]');
+    table.textContent = ""; res = {};
+    await runTests();
+    showExtras();
+    for (var i = 0; i < SEQUENCE.length; i++) {
+      var b = document.querySelector('[data-t="' + SEQUENCE[i] + '"]');
       if (b) b.textContent = "⏳ " + b.textContent;
-      try { await extras[SEQUENCIA[i]](); } catch (e) {}
+      try { await extras[SEQUENCE[i]](); } catch (e) {}
       if (b) b.textContent = "✓ " + b.textContent.replace(/^⏳ /, "");
     }
     $("estado").textContent = Object.keys(res).length + " results. Download the report below.";
@@ -552,30 +552,30 @@
   // Stop: the running test is marked as stopped, and the page reloads to end its work (workers, timers)
   $("parar").addEventListener("click", function () {
     Object.keys(res).forEach(function (k) { if (res[k].value === "running...") { res[k].ok = false; res[k].value = "stopped by the user"; } });
-    try { sessionStorage.setItem(PARCIAL, JSON.stringify(res)); } catch (e) {}
+    try { sessionStorage.setItem(PARTIAL, JSON.stringify(res)); } catch (e) {}
     location.reload();
   });
   try {
-    var parcial = sessionStorage.getItem(PARCIAL);
-    if (parcial) {
-      sessionStorage.removeItem(PARCIAL);
-      var r0 = JSON.parse(parcial);
+    var partial = sessionStorage.getItem(PARTIAL);
+    if (partial) {
+      sessionStorage.removeItem(PARTIAL);
+      var r0 = JSON.parse(partial);
       Object.keys(r0).forEach(function (k) { put(k, r0[k].ok, r0[k].value); if (r0[k].ms != null) res[k].ms = r0[k].ms; });
-      mostrarExtras();
+      showExtras();
       $("estado").textContent = "Stopped. " + Object.keys(r0).length + " results kept: download the report or run again.";
     }
   } catch (e) {}
   try {
-    var salvo = !Object.keys(res).length && localStorage.getItem(SALVO);
-    if (salvo) {
-      var r1 = JSON.parse(salvo), marca = localStorage.getItem("xeos-tests-mem");
+    var saved = !Object.keys(res).length && localStorage.getItem(SAVED);
+    if (saved) {
+      var r1 = JSON.parse(saved), marca = localStorage.getItem("xeos-tests-mem");
       Object.keys(r1).forEach(function (k) {
         var o = r1[k];
         if (o.value === "running...") { o.ok = false; o.value = k === "mem.limit" && marca ? "page reloaded: " + marca : "interrupted (page reloaded)"; }
         put(k, o.ok, o.value); if (o.ms != null) res[k].ms = o.ms;
       });
       if (marca) localStorage.removeItem("xeos-tests-mem");
-      mostrarExtras();
+      showExtras();
       $("estado").textContent = Object.keys(r1).length + " saved results restored. Download or copy the report below.";
     }
   } catch (e) {}
@@ -585,14 +585,14 @@
     try { await extras[b.dataset.t](); } finally { b.disabled = false; b.textContent = "✓ " + txt.replace(/^✓ /, ""); }
   });
   $("baixar").addEventListener("click", function () {
-    var r = relatorio(), a = document.createElement("a");
+    var r = report(), a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
-    a.download = nome(r); a.click();
+    a.download = name(r); a.click();
     try { localStorage.setItem("xeos-tests-run", r.report); } catch (e) {}
     $("estado").textContent = "Saved " + a.download + ". Next: Upload to GitHub.";
   });
   $("copiar").addEventListener("click", async function () {
-    try { await navigator.clipboard.writeText(JSON.stringify(relatorio(), null, 2)); $("estado").textContent = "JSON copied."; }
+    try { await navigator.clipboard.writeText(JSON.stringify(report(), null, 2)); $("estado").textContent = "JSON copied."; }
     catch (e) { $("estado").textContent = "Copy failed: " + err(e); }
   });
 })();

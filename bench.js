@@ -242,11 +242,11 @@
   function ask(w, msg) { return new Promise(function (ok) { w.onmessage = function (e) { ok(e.data); }; w.postMessage(msg); }); }
 
   // ---------- result state ----------
-  var R = null, parar = false;
+  var R = null, stopping = false;
   function M(id, v, note) {
     if (v == null || !isFinite(v)) { R.metrics[id] = { v: null, note: note || "n/a" }; log("  " + id + " = n/a " + (note || "")); }
     else { R.metrics[id] = { v: +(+v).toPrecision(4), note: note || "" }; log("  " + id + " = " + R.metrics[id].v + " " + (DEF[id] ? DEF[id].unit : "") + (note ? " (" + note + ")" : "")); }
-    guardar(); desenhar();
+    store(); paint();
   }
   function score(id, m) {
     var d = DEF[id]; if (!d || !d.ref || !m || m.v == null || m.v <= 0) return null;
@@ -259,7 +259,7 @@
     out.overall = geo([out.cpu1, out.cpuN, out.mem, out.gfx].map(function (x) { return x || 0; }));
     return out;
   }
-  function guardar() { try { R.scores = scores(R); localStorage.setItem("inkbench-last", JSON.stringify(R)); } catch (e) {} }
+  function store() { try { R.scores = scores(R); localStorage.setItem("inkbench-last", JSON.stringify(R)); } catch (e) {} }
 
   // ---------- identification ----------
   async function identify() {
@@ -322,7 +322,7 @@
     for (var k = 0; k < nW; k++) ws.push(await mkWorker());
     log(prefix + ": " + nW + " worker(s), wasm " + (ws[0].wasm ? "ok" : "unavailable"));
     try {
-      for (var j = 0; j < KERNELS.length && !parar; j++) {
+      for (var j = 0; j < KERNELS.length && !stopping; j++) {
         var kk = KERNELS[j][0];
         var rs = await Promise.all(ws.map(function (w) { return ask(w, { k: kk, warm: 150, ms: 700 }); }));
         var bad = rs.filter(function (r) { return r.error; });
@@ -331,7 +331,7 @@
       }
     } finally { ws.forEach(function (w) { w.terminate(); }); }
   }
-  async function memoria() {
+  async function memory() {
     var w = await mkWorker();
     try { var r = await ask(w, { mem: true }); if (r.error) throw new Error(r.error); M("mem.copy", r.mem.copy); M("mem.fill", r.mem.fill); M("mem.read", r.mem.read); M("mem.latency", r.mem.latency); }
     finally { w.terminate(); }
@@ -346,7 +346,7 @@
     M("jit.warm", mops, mops > 150 ? "JIT on" : mops < 40 ? "JIT looks OFF (interpreter only)" : "");
     M("jit.ratio", cold / best, "first run " + cold.toFixed(2) + " ms, best " + best.toFixed(3) + " ms");
   }
-  async function disco() {
+  async function disk() {
     try {
       var d = await navigator.storage.getDirectory(), fh = await d.getFileHandle("inkbench.bin", { create: true });
       var chunk = new Uint8Array(8 << 20); for (var i = 0; i < chunk.length; i += 4096) chunk[i] = i & 255;
@@ -366,7 +366,7 @@
       db.close(); indexedDB.deleteDatabase("inkbench");
     } catch (e) { M("disk.idbWrite", null, err(e)); M("disk.idbRead", null, "skipped"); }
   }
-  async function rede() {
+  async function network() {
     var lat = [];
     for (var k = 0; k < 7; k++) { var t0 = performance.now(); try { await fetch("/favicon.ico?r=" + Math.random(), { method: "HEAD", cache: "no-store" }); lat.push(performance.now() - t0); } catch (e) { log("latency fetch: " + err(e)); } }
     lat.shift(); lat.sort(function (a, b) { return a - b; });
@@ -392,7 +392,7 @@
   function frames(ms, draw) {
     return new Promise(function (ok) { var n = 0, t0 = performance.now(); function f(now) { if (draw) draw(); n++; if (now - t0 < ms) requestAnimationFrame(f); else ok(n / ((now - t0) / 1000)); } requestAnimationFrame(f); });
   }
-  async function graficos() {
+  async function graphics() {
     M("gfx.refresh", await frames(1000));
     var c = document.createElement("canvas"); c.width = c.height = 1024; var g = c.getContext("2d");
     var cols = []; for (var i = 0; i < 64; i++) cols.push("hsla(" + (i * 37 % 360) + ",70%,50%,0.5)");
@@ -482,21 +482,21 @@
   // ---------- tile render (Cinebench-style, smallpt scene) and fur donut (FurMark-style), open implementations ----------
   var TW = 320, TH = 240, TS = 32, SPP = 8;
   function tiles() { var a = []; for (var y = 0; y < TH; y += TS) for (var x = 0; x < TW; x += TS) a.push({ x: x, y: y, w: Math.min(TS, TW - x), h: Math.min(TS, TH - y), W: TW, H: TH, spp: SPP }); return a; }
-  function tela(id, on) { var c = $(id); c.hidden = !on; return c; }
+  function screen(id, on) { var c = $(id); c.hidden = !on; return c; }
   // Runs tiles on the workers until the image is done (or ms passes; loop = start again forever) and draws them as they arrive
   async function renderTiles(ws, ms, loop, onTile) {
-    var c = tela("b-tiles", true), g = c.getContext("2d"), fila = tiles(), i = 0, amostras = 0, t0 = performance.now(), fim = false;
+    var c = screen("b-tiles", true), g = c.getContext("2d"), fila = tiles(), i = 0, amostras = 0, t0 = performance.now(), finish = false;
     g.fillStyle = "#111"; g.fillRect(0, 0, TW, TH);
-    function prox() { if (fim || parar || performance.now() - t0 > ms) return null; if (i >= fila.length) { if (!loop) return null; i = 0; } return fila[i++]; }
+    function next() { if (finish || stopping || performance.now() - t0 > ms) return null; if (i >= fila.length) { if (!loop) return null; i = 0; } return fila[i++]; }
     await Promise.all(ws.map(async function (w) {
-      for (var tl; (tl = prox());) {
+      for (var tl; (tl = next());) {
         g.strokeStyle = "#f59e0b"; g.strokeRect(tl.x + .5, tl.y + .5, tl.w - 1, tl.h - 1);
         var r = await ask(w, { tile: tl }); if (r.error) throw new Error(r.error);
         g.putImageData(new ImageData(r.pix, tl.w, tl.h), tl.x, tl.y);
         var n = tl.w * tl.h * 4 * SPP; amostras += n; if (onTile) onTile(n);
       }
     }));
-    fim = true;
+    finish = true;
     return { samples: amostras, ms: performance.now() - t0 };
   }
   async function tileTest() {
@@ -541,7 +541,7 @@
       // each screen refresh: draw finished frames (waiting for the GPU) for ~12 ms; fps = frames / GPU-busy time, so it is not capped by the screen
       tick: function () { var t0 = performance.now(), n = 0, el; do { this.frame(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); n++; el = performance.now() - t0; } while (el < 12); this.busy += el; return n; },
       frame: function () { gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.uniform1f(ut, t += 0.012); for (var s = 0; s < SHELLS; s++) { gl.uniform1f(ush, s / (SHELLS - 1)); gl.drawElements(gl.TRIANGLES, ib.length, gl.UNSIGNED_SHORT, 0); } },
-      fim: function () { var l = gl.getExtension("WEBGL_lose_context"); if (l) l.loseContext(); tela("b-fur", false); }
+      fim: function () { var l = gl.getExtension("WEBGL_lose_context"); if (l) l.loseContext(); screen("b-fur", false); }
     };
   }
   function furFps(f, ms) {
@@ -556,16 +556,16 @@
   async function stress() {
     if (!R) R = { kind: "inkbench", version: BENCH_VERSION, date: new Date().toISOString(), label: $("b-label").value.trim(), info: {}, metrics: {}, log: [] };
     if (!R.info || !R.info.browser) { R.info = await identify(); R.label = R.label || autoLabel(R.info); $("b-label").value = R.label; }
-    parar = false; $("b-rodar").disabled = $("b-stress").disabled = true; $("b-parar").hidden = false;
+    stopping = false; $("b-rodar").disabled = $("b-stress").disabled = true; $("b-parar").hidden = false;
     log("== Stress test 5 min (all cores tile render + fur donut)");
-    var n = navigator.brave ? 16 : Math.min(Math.max(navigator.hardwareConcurrency || 4, 2), 16), ws = [], f = null, cpu = [], gpu = [], am = 0, fr = 0, vivo = true;
+    var n = navigator.brave ? 16 : Math.min(Math.max(navigator.hardwareConcurrency || 4, 2), 16), ws = [], f = null, cpu = [], gpu = [], am = 0, fr = 0, alive = true;
     try {
       for (var k = 0; k < n; k++) ws.push(await mkWorker());
       f = furGL();
       var cpuRun = renderTiles(ws, 300000, true, function (x) { am += x; });
-      (function loop(now) { if (!vivo) return; if (now) fr += f.tick(); requestAnimationFrame(loop); })();
+      (function loop(now) { if (!alive) return; if (now) fr += f.tick(); requestAnimationFrame(loop); })();
       var t0 = performance.now(), last = t0;
-      while (performance.now() - t0 < 300000 && !parar) {
+      while (performance.now() - t0 < 300000 && !stopping) {
         // sample only after a full 10 s window: late timers (iOS) gave empty windows and spikes
         await sleep(500); var now = performance.now(); if (now - last < 10000) continue;
         var dt = (now - last) / 1000; last = now;
@@ -575,15 +575,15 @@
         log("  t=" + el + "s cpu " + cpu[cpu.length - 1] + " k samples/s · gpu " + gpu[gpu.length - 1] + " fps");
         $("b-estado").textContent = "🔥 Stress " + Math.floor(el / 60) + ":" + String(el % 60).padStart(2, "0") + " / 5:00 · CPU " + cpu[cpu.length - 1] + " k samples/s · GPU " + gpu[gpu.length - 1] + " fps";
       }
-      vivo = false; parar = true; await cpuRun.catch(function (e) { log("stress cpu: " + err(e)); });
+      alive = false; stopping = true; await cpuRun.catch(function (e) { log("stress cpu: " + err(e)); });
       function keep(a) { a = a.filter(function (x) { return x > 0; }); if (a.length < 4) return null; var s = (a[0] + a[1]) / 2, e = (a[a.length - 1] + a[a.length - 2] + a[a.length - 3]) / 3; return s ? e / s * 100 : null; }
       R.series = { step: 10, cpu: cpu, gpu: gpu };
       M("stress.cpu", keep(cpu), cpu.length ? "start " + cpu[0] + " · end " + cpu[cpu.length - 1] + " k samples/s · " + cpu.length * 10 + " s" : "");
       M("stress.gpu", keep(gpu), gpu.length ? "start " + gpu[0] + " · end " + gpu[gpu.length - 1] + " fps" : "");
-      R.log = LOG.slice(); guardar();
+      R.log = LOG.slice(); store();
       $("b-estado").textContent = "✓ Stress done. CPU kept " + fmt(R.metrics["stress.cpu"].v) + "% · GPU kept " + fmt(R.metrics["stress.gpu"].v) + "%.";
     } catch (e) { log("ERROR stress: " + err(e)); $("b-estado").textContent = "Stress failed: " + e.message; }
-    finally { vivo = false; ws.forEach(function (w) { w.terminate(); }); if (f) f.fim(); tela("b-tiles", false); parar = false; $("b-rodar").disabled = $("b-stress").disabled = false; $("b-parar").hidden = true; desenhar(); }
+    finally { alive = false; ws.forEach(function (w) { w.terminate(); }); if (f) f.fim(); screen("b-tiles", false); stopping = false; $("b-rodar").disabled = $("b-stress").disabled = false; $("b-parar").hidden = true; paint(); }
   }
   async function media() {
     if (!window.VideoEncoder) { M("media.encode", null, "WebCodecs not supported"); return; }
@@ -607,63 +607,63 @@
 
 
   // ---------- recognized open-source tests (self-hosted copies, run in a 1280x720 frame) ----------
-  function quadro(src) {
+  function frameOf(src) {
     var box = $("b-quadro"); box.hidden = false; box.innerHTML = "";
     var f = document.createElement("iframe"), esc = Math.min(1, (box.clientWidth || 640) / 1280);
     f.style.cssText = "width:1280px;height:720px;border:0;transform-origin:0 0;transform:scale(" + esc + ")"; box.style.height = Math.round(720 * esc) + "px";
     var ok = new Promise(function (res, no) { f.onload = function () { res(f); }; setTimeout(function () { no(new Error("page did not load: " + src)); }, 60000); });
     f.src = src; box.appendChild(f); return ok;
   }
-  function fecharQuadro() { var b = $("b-quadro"); b.innerHTML = ""; b.hidden = true; }
-  async function aquario() {
-    var f = await quadro("aquarium/aquarium/aquarium.html?canvasWidth=1920&canvasHeight=1080&fitWindow=false");
+  function closeFrame() { var b = $("b-quadro"); b.innerHTML = ""; b.hidden = true; }
+  async function aquarium() {
+    var f = await frameOf("aquarium/aquarium/aquarium.html?canvasWidth=1920&canvasHeight=1080&fitWindow=false");
     var w = f.contentWindow, n = 0, raf = w.requestAnimationFrame.bind(w), t0 = performance.now();
     w.requestAnimationFrame = function (cb) { n++; return raf(cb); };
     try {
       while (!(w.setSetting && w.document.getElementById("setSetting9")) || n < 20) { if (performance.now() - t0 > 90000) throw new Error("Aquarium did not start (frames " + n + ")"); await sleep(250); }
       log("  Aquarium loaded in " + ((performance.now() - t0) / 1000).toFixed(1) + " s");
-      var passos = [[4, 5000, "reco.aq5k"], [6, 15000, "reco.aq15k"], [9, 30000, "reco.aq30k"]];
-      for (var i = 0; i < passos.length && !parar; i++) {
-        w.setSetting(w.document.getElementById("setSetting" + passos[i][0]), passos[i][0]);
+      var steps = [[4, 5000, "reco.aq5k"], [6, 15000, "reco.aq15k"], [9, 30000, "reco.aq30k"]];
+      for (var i = 0; i < steps.length && !stopping; i++) {
+        w.setSetting(w.document.getElementById("setSetting" + steps[i][0]), steps[i][0]);
         await sleep(2000); n = 0; var a = performance.now(); await sleep(6000);
-        M(passos[i][2], n / ((performance.now() - a) / 1000), passos[i][1] + " fish, 1920x1080 (capped by the screen refresh)");
+        M(steps[i][2], n / ((performance.now() - a) / 1000), steps[i][1] + " fish, 1920x1080 (capped by the screen refresh)");
       }
-    } finally { fecharQuadro(); }
+    } finally { closeFrame(); }
   }
   async function motionmark() {
-    var f = await quadro("motionmark/index.html"), w = f.contentWindow, t0 = performance.now();
+    var f = await frameOf("motionmark/index.html"), w = f.contentWindow, t0 = performance.now();
     while (!(w.benchmarkController && w.Suites && w.Strings)) { if (performance.now() - t0 > 30000) throw new Error("MotionMark did not load"); await sleep(200); }
     try {
-      var fim = new Promise(function (ok) { var orig = w.benchmarkController.showResults; w.benchmarkController.showResults = function () { try { orig.apply(this, arguments); } catch (e) { log("  MotionMark results page: " + err(e)); } ok(); }; });
+      var finish = new Promise(function (ok) { var orig = w.benchmarkController.showResults; w.benchmarkController.showResults = function () { try { orig.apply(this, arguments); } catch (e) { log("  MotionMark results page: " + err(e)); } ok(); }; });
       log("  MotionMark " + w.Strings.version + ": " + w.Suites.map(function (s) { return s.tests.length; }).reduce(function (a, b) { return a + b; }, 0) + " tests x 30 s");
       w.benchmarkController.startBenchmark();
-      await Promise.race([fim, new Promise(function (_, no) {
-        var iv = setInterval(function () { if (parar) { clearInterval(iv); no(new Error("stopped by the user")); } }, 500);
+      await Promise.race([finish, new Promise(function (_, no) {
+        var iv = setInterval(function () { if (stopping) { clearInterval(iv); no(new Error("stopped by the user")); } }, 500);
         setTimeout(function () { clearInterval(iv); no(new Error("timeout 15 min")); }, 900000);
       })]);
       var d = w.benchmarkRunnerClient.results, it = (d.results || [])[0] || {}, tr = it.testsResults || {};
       Object.keys(tr).forEach(function (su) { Object.keys(tr[su]).forEach(function (t) { log("  MotionMark " + t + " = " + (+tr[su][t].score).toFixed(2)); }); });
       var conf = d.scoreLowerBound && d.score ? " ±" + ((d.scoreUpperBound - d.scoreLowerBound) / 2 / d.score * 100).toFixed(1) + "%" : "";
       M("reco.motionmark", d.score, "MotionMark " + w.Strings.version + conf);
-    } finally { fecharQuadro(); }
+    } finally { closeFrame(); }
   }
-  async function reconhecidos() {
+  async function known() {
     if (!R) R = { kind: "inkbench", version: BENCH_VERSION, date: new Date().toISOString(), label: $("b-label").value.trim(), info: {}, metrics: {}, log: [] };
     if (!R.info || !R.info.browser) { R.info = await identify(); R.label = R.label || autoLabel(R.info); $("b-label").value = R.label; }
-    parar = false; $("b-rodar").disabled = $("b-stress").disabled = $("b-reco").disabled = true; $("b-parar").hidden = false;
+    stopping = false; $("b-rodar").disabled = $("b-stress").disabled = $("b-reco").disabled = true; $("b-parar").hidden = false;
     try {
       log("== WebGL Aquarium (Google, open source)"); $("b-estado").textContent = "⏳ WebGL Aquarium (~40 s)";
-      try { await aquario(); } catch (e) { log("ERROR in Aquarium: " + err(e)); }
-      if (!parar) {
+      try { await aquarium(); } catch (e) { log("ERROR in Aquarium: " + err(e)); }
+      if (!stopping) {
         log("== MotionMark (WebKit, open source)"); $("b-estado").textContent = "⏳ MotionMark (~5 min, keep the page in front)";
         try { await motionmark(); } catch (e) { log("ERROR in MotionMark: " + err(e)); }
       }
-      R.scores = scores(R); R.log = LOG.slice(); guardar(); log("Scores " + JSON.stringify(R.scores));
-      $("b-estado").textContent = parar ? "Stopped." : "✓ Aquarium + MotionMark done.";
-    } finally { parar = false; $("b-rodar").disabled = $("b-stress").disabled = $("b-reco").disabled = false; $("b-parar").hidden = true; desenhar(); }
+      R.scores = scores(R); R.log = LOG.slice(); store(); log("Scores " + JSON.stringify(R.scores));
+      $("b-estado").textContent = stopping ? "Stopped." : "✓ Aquarium + MotionMark done.";
+    } finally { stopping = false; $("b-rodar").disabled = $("b-stress").disabled = $("b-reco").disabled = false; $("b-parar").hidden = true; paint(); }
   }
 
-  var PASSOS = [
+  var STEPS = [
     ["Identify device", async function () { R.info = await identify(); R.label = R.label || autoLabel(R.info); $("b-label").value = R.label; Object.keys(R.info).forEach(function (k) { log("  " + k + ": " + R.info[k]); }); }],
     ["CPU single-core", function () { return cpu(1, "cpu1"); }],
     ["CPU multi-core", async function () {
@@ -673,44 +673,44 @@
       var a = KERNELS.map(function (k) { var s = R.metrics["cpu1." + k[0]], m = R.metrics["cpuN." + k[0]]; return s && m && s.v && m.v ? m.v / s.v : 0; });
       M("cpuN.speedup", geo(a.map(function (x) { return x * 1000; })) / 1000, n + " threads");
     }],
-    ["Memory", memoria], ["JIT", jit], ["Storage", disco], ["Network + WebAssembly compile", rede],
-    ["Graphics + GPU", graficos], ["Rendering", render], ["Tile render (smallpt)", tileTest], ["Fur donut (GPU)", furTest], ["Media", media]
+    ["Memory", memory], ["JIT", jit], ["Storage", disk], ["Network + WebAssembly compile", network],
+    ["Graphics + GPU", graphics], ["Rendering", render], ["Tile render (smallpt)", tileTest], ["Fur donut (GPU)", furTest], ["Media", media]
   ];
-  async function rodar() {
-    parar = false;
+  async function runAll() {
+    stopping = false;
     R = { kind: "inkbench", version: BENCH_VERSION, date: new Date().toISOString(), label: $("b-label").value.trim(), info: {}, metrics: {}, log: [] };
     LOG.length = 0; t00 = performance.now();
     log("Benchmark v" + BENCH_VERSION + " started " + R.date + " · " + location.href);
     $("b-rodar").disabled = true; $("b-parar").hidden = false;
-    for (var i = 0; i < PASSOS.length; i++) {
-      if (parar) { log("Stopped by the user"); break; }
-      $("b-estado").textContent = "⏳ " + PASSOS[i][0] + " (" + (i + 1) + "/" + PASSOS.length + ")";
-      log("== " + PASSOS[i][0]); var t0 = performance.now();
-      try { await timeout(Promise.resolve().then(PASSOS[i][1]), 120000, PASSOS[i][0]); }
-      catch (e) { log("ERROR in " + PASSOS[i][0] + ": " + err(e)); }
+    for (var i = 0; i < STEPS.length; i++) {
+      if (stopping) { log("Stopped by the user"); break; }
+      $("b-estado").textContent = "⏳ " + STEPS[i][0] + " (" + (i + 1) + "/" + STEPS.length + ")";
+      log("== " + STEPS[i][0]); var t0 = performance.now();
+      try { await timeout(Promise.resolve().then(STEPS[i][1]), 120000, STEPS[i][0]); }
+      catch (e) { log("ERROR in " + STEPS[i][0] + ": " + err(e)); }
       log("   done in " + ((performance.now() - t0) / 1000).toFixed(1) + " s");
       await sleep(300);
     }
-    R.scores = scores(R); R.log = LOG.slice(); guardar();
+    R.scores = scores(R); R.log = LOG.slice(); store();
     log("Scores " + JSON.stringify(R.scores));
-    $("b-estado").textContent = parar ? "Stopped. Partial results below." : "✓ Done. Overall score " + (R.scores.overall || "?") + ".";
-    $("b-rodar").disabled = false; $("b-parar").hidden = true; desenhar();
+    $("b-estado").textContent = stopping ? "Stopped. Partial results below." : "✓ Done. Overall score " + (R.scores.overall || "?") + ".";
+    $("b-rodar").disabled = false; $("b-parar").hidden = true; paint();
   }
 
   // ---------- screen ----------
-  var OUTROS = [], CORES = ["#2563eb", "#f59e0b", "#16a34a", "#dc2626", "#7c3aed", "#0891b2"];
+  var OTHERS = [], CORES = ["#2563eb", "#f59e0b", "#16a34a", "#dc2626", "#7c3aed", "#0891b2"];
   function fmt(v) { return v == null ? "n/a" : v >= 100 ? String(Math.round(v)) : v >= 10 ? v.toFixed(1) : v.toFixed(2); }
-  function sets() { return (R && Object.keys(R.metrics).length ? [R] : []).concat(OUTROS).slice(0, 6); }
-  function desenhar() {
+  function sets() { return (R && Object.keys(R.metrics).length ? [R] : []).concat(OTHERS).slice(0, 6); }
+  function paint() {
     var S = sets(), box = $("b-cards"), tb = $("b-tabela");
     box.textContent = ""; tb.textContent = "";
     $("b-saida").hidden = !R; $("b-comp").hidden = S.length < 2;
-    $("b-lista").textContent = OUTROS.length ? "Loaded for comparison: " + OUTROS.map(function (o) { return o.label; }).join(" · ") : "";
+    $("b-lista").textContent = OTHERS.length ? "Loaded for comparison: " + OTHERS.map(function (o) { return o.label; }).join(" · ") : "";
     if (!S.length) return;
     S.forEach(function (s) { s.scores = s.scores || scores(s); });
-    var linhas = [["overall", "Overall"]].concat(CATS);
-    var max = 1; S.forEach(function (s) { linhas.forEach(function (c) { max = Math.max(max, s.scores[c[0]] || 0); }); });
-    linhas.forEach(function (c) {
+    var rows = [["overall", "Overall"]].concat(CATS);
+    var max = 1; S.forEach(function (s) { rows.forEach(function (c) { max = Math.max(max, s.scores[c[0]] || 0); }); });
+    rows.forEach(function (c) {
       var d = document.createElement("div"); d.className = "card" + (c[0] === "overall" ? " big" : "");
       var h = document.createElement("div"); h.className = "card-t"; h.textContent = c[1]; d.appendChild(h);
       S.forEach(function (s, k) {
@@ -726,7 +726,7 @@
       S.forEach(function (s, k) { var sp = document.createElement("span"); sp.innerHTML = "<i></i>"; sp.firstChild.style.background = CORES[k]; sp.appendChild(document.createTextNode(s.label)); lg.appendChild(sp); });
       box.insertBefore(lg, box.firstChild);
     }
-    var ids = idsDe(S), tr = document.createElement("tr");
+    var ids = idsOf(S), tr = document.createElement("tr");
     ["Test"].concat(S.map(function (s) { return s.label; })).forEach(function (t) { var th = document.createElement("th"); th.textContent = t; tr.appendChild(th); });
     tb.appendChild(tr);
     var cat = "";
@@ -738,7 +738,7 @@
       tb.appendChild(r);
     });
   }
-  function idsDe(S) {
+  function idsOf(S) {
     var ids = Object.keys(DEF).filter(function (id) { return S.some(function (s) { return s.metrics[id]; }); });
     S.forEach(function (s) { Object.keys(s.metrics).forEach(function (id) { if (ids.indexOf(id) < 0) ids.push(id); }); });
     return ids;
@@ -749,12 +749,12 @@
   function rgb(hex) { var n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(function (x) { return (x / 255).toFixed(3); }).join(" "); }
   function esc(s) { return String(s).replace(/[^\x20-\x7e\xa0-\xff]/g, function (c) { return { "–": "-", "—": "-", "·": "\xb7", "✓": "ok", "×": "x" }[c] || "?"; }).replace(/[\\()]/g, "\\$&"); }
   Pdf.prototype.novaPagina = function () { this.c = []; this.pages.push(this.c); this.y = 50; };
-  Pdf.prototype.txt = function (x, y, s, sz, bold, cor) { this.c.push(rgb(cor || "#111111") + " rg BT /" + (bold ? "F2" : "F1") + " " + sz + " Tf " + x.toFixed(1) + " " + (842 - y).toFixed(1) + " Td (" + esc(s) + ") Tj ET"); };
-  Pdf.prototype.rect = function (x, y, w, h, cor) { this.c.push(rgb(cor) + " rg " + x.toFixed(1) + " " + (842 - y - h).toFixed(1) + " " + w.toFixed(1) + " " + h.toFixed(1) + " re f"); };
-  Pdf.prototype.linha = function (x1, y1, x2, y2, cor) { this.c.push(rgb(cor || "#dddddd") + " RG 0.5 w " + x1 + " " + (842 - y1) + " m " + x2 + " " + (842 - y2) + " l S"); };
-  Pdf.prototype.poli = function (pts, cor) { if (pts.length < 2) return; this.c.push(rgb(cor) + " RG 1.4 w " + pts.map(function (q, i) { return q[0].toFixed(1) + " " + (842 - q[1]).toFixed(1) + (i ? " l" : " m"); }).join(" ") + " S"); };
+  Pdf.prototype.txt = function (x, y, s, sz, bold, color) { this.c.push(rgb(color || "#111111") + " rg BT /" + (bold ? "F2" : "F1") + " " + sz + " Tf " + x.toFixed(1) + " " + (842 - y).toFixed(1) + " Td (" + esc(s) + ") Tj ET"); };
+  Pdf.prototype.rect = function (x, y, w, h, color) { this.c.push(rgb(color) + " rg " + x.toFixed(1) + " " + (842 - y - h).toFixed(1) + " " + w.toFixed(1) + " " + h.toFixed(1) + " re f"); };
+  Pdf.prototype.linha = function (x1, y1, x2, y2, color) { this.c.push(rgb(color || "#dddddd") + " RG 0.5 w " + x1 + " " + (842 - y1) + " m " + x2 + " " + (842 - y2) + " l S"); };
+  Pdf.prototype.poli = function (pts, color) { if (pts.length < 2) return; this.c.push(rgb(color) + " RG 1.4 w " + pts.map(function (q, i) { return q[0].toFixed(1) + " " + (842 - q[1]).toFixed(1) + (i ? " l" : " m"); }).join(" ") + " S"); };
   Pdf.prototype.espaco = function (h) { if (this.y + h > 800) this.novaPagina(); };
-  Pdf.prototype.bytes = function (dados) {
+  Pdf.prototype.bytes = function (results) {
     var objs = [null, "<< /Type /Catalog /Pages 2 0 R >>", "", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"];
     var kids = [], self = this;
     this.pages.forEach(function (c, i) {
@@ -767,7 +767,7 @@
     objs[2] = "<< /Type /Pages /Kids [" + kids.join(" ") + "] /Count " + kids.length + " >>";
     var out = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n", off = [];
     for (var i = 1; i < objs.length; i++) { off[i] = out.length; out += i + " 0 obj\n" + objs[i] + "\nendobj\n"; }
-    out += "%INKBENCH " + btoa(unescape(encodeURIComponent(JSON.stringify(dados)))) + "\n";
+    out += "%INKBENCH " + btoa(unescape(encodeURIComponent(JSON.stringify(results)))) + "\n";
     var xr = out.length;
     out += "xref\n0 " + objs.length + "\n0000000000 65535 f \n";
     for (var j = 1; j < objs.length; j++) out += String(off[j]).padStart(10, "0") + " 00000 n \n";
@@ -775,19 +775,19 @@
     var u = new Uint8Array(out.length); for (var k = 0; k < out.length; k++) u[k] = out.charCodeAt(k) & 255;
     return u;
   }
-  function corta(s, w, sz) { s = String(s); var n = Math.floor(w / (sz * 0.5)); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + "." : s; }
+  function clip(s, w, sz) { s = String(s); var n = Math.floor(w / (sz * 0.5)); return s.length > n ? s.slice(0, Math.max(1, n - 1)) + "." : s; }
 
-  function pdfDe(S) {
+  function pdfOf(S) {
     var p = new Pdf(), comp = S.length > 1;
     S.forEach(function (s) { s.scores = s.scores || scores(s); });
     p.txt(40, p.y, comp ? "Browser benchmark comparison" : "Browser benchmark", 20, true); p.y += 18;
     p.txt(40, p.y, "InkDOS Hub \xb7 benchmark v" + BENCH_VERSION + " \xb7 " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC", 9, false, "#666666"); p.y += 22;
-    S.forEach(function (s, k) { p.rect(40, p.y - 8, 9, 9, CORES[k]); p.txt(54, p.y, corta(s.label + "  (" + String(s.date).slice(0, 10) + ")", 480, 11), 11, true); p.y += 15; });
+    S.forEach(function (s, k) { p.rect(40, p.y - 8, 9, 9, CORES[k]); p.txt(54, p.y, clip(s.label + "  (" + String(s.date).slice(0, 10) + ")", 480, 11), 11, true); p.y += 15; });
     p.y += 8;
     p.txt(40, p.y, "Scores", 13, true); p.y += 6; p.linha(40, p.y, 555, p.y); p.y += 14;
-    var linhas = [["overall", "Overall"]].concat(CATS), max = 1;
-    S.forEach(function (s) { linhas.forEach(function (c) { max = Math.max(max, s.scores[c[0]] || 0); }); });
-    linhas.forEach(function (c) {
+    var rows = [["overall", "Overall"]].concat(CATS), max = 1;
+    S.forEach(function (s) { rows.forEach(function (c) { max = Math.max(max, s.scores[c[0]] || 0); }); });
+    rows.forEach(function (c) {
       p.espaco(12 * S.length + 8);
       p.txt(40, p.y + 7, c[1], 10, c[0] === "overall");
       S.forEach(function (s, k) {
@@ -801,27 +801,27 @@
     p.txt(40, p.y + 4, "1000 = reference device. Higher is better. Overall = geometric mean of CPU single, CPU multi, memory and graphics.", 8, false, "#666666"); p.y += 24;
     // device info
     p.espaco(60); p.txt(40, p.y, "Device and browser", 13, true); p.y += 6; p.linha(40, p.y, 555, p.y); p.y += 14;
-    var chaves = ["browser", "browserVersion", "engine", "os", "osVersion", "device", "model", "chip", "arch", "cpuThreads", "memory", "gpu", "webgpu", "storageQuota", "screen", "connection", "crossOriginIsolated", "userAgent"];
+    var keys = ["browser", "browserVersion", "engine", "os", "osVersion", "device", "model", "chip", "arch", "cpuThreads", "memory", "gpu", "webgpu", "storageQuota", "screen", "connection", "crossOriginIsolated", "userAgent"];
     var colW = (515 - 110) / S.length;
-    chaves.forEach(function (k) {
+    keys.forEach(function (k) {
       if (!S.some(function (s) { return s.info && s.info[k] != null; })) return;
       p.espaco(14); p.txt(40, p.y, k, 8, true, "#444444");
-      S.forEach(function (s, j) { p.txt(150 + j * colW, p.y, corta(s.info && s.info[k] != null ? s.info[k] : "-", colW - 6, 8), 8, false); });
+      S.forEach(function (s, j) { p.txt(150 + j * colW, p.y, clip(s.info && s.info[k] != null ? s.info[k] : "-", colW - 6, 8), 8, false); });
       p.y += 12;
     });
     // details
     p.novaPagina(); p.txt(40, p.y, "Details", 13, true); p.y += 6; p.linha(40, p.y, 555, p.y); p.y += 14;
-    var ids = idsDe(S), cat = "", vx = 260, vw = (comp ? 240 : 120) / S.length;
+    var ids = idsOf(S), cat = "", vx = 260, vw = (comp ? 240 : 120) / S.length;
     ids.forEach(function (id) {
       var d = DEF[id] || { name: id, unit: "", cat: "" };
       if (d.cat !== cat) { cat = d.cat; p.espaco(30); p.y += 6; p.txt(40, p.y, (CATS.find(function (c) { return c[0] === cat; }) || [0, cat])[1], 10, true, "#2563eb"); p.y += 13; }
       p.espaco(14);
-      p.txt(40, p.y, corta(d.name + (d.unit ? " (" + d.unit + ")" : ""), 215, 9), 9);
+      p.txt(40, p.y, clip(d.name + (d.unit ? " (" + d.unit + ")" : ""), 215, 9), 9);
       S.forEach(function (s, j) {
         var m = s.metrics[id]; p.txt(vx + j * vw, p.y, m ? fmt(m.v) : "-", 9, j === 0 && !comp, comp ? CORES[j] : "#111111");
       });
       if (comp) { var a = S[0].metrics[id], b = S[S.length - 1].metrics[id]; if (a && b && a.v && b.v) { var r = Math.round((b.v / a.v - 1) * 100), good = d.lower ? r <= 0 : r >= 0; p.txt(515, p.y, (r > 0 ? "+" : "") + r + "%", 9, true, good ? "#16a34a" : "#dc2626"); } }
-      else { var m0 = S[0].metrics[id]; if (m0 && m0.note) p.txt(390, p.y, corta(m0.note, 165, 7), 7, false, "#777777"); var sc = score(id, m0); if (sc) { p.rect(vx + 60, p.y - 7, Math.min(60, sc / 2000 * 60), 7, "#93c5fd"); } }
+      else { var m0 = S[0].metrics[id]; if (m0 && m0.note) p.txt(390, p.y, clip(m0.note, 165, 7), 7, false, "#777777"); var sc = score(id, m0); if (sc) { p.rect(vx + 60, p.y - 7, Math.min(60, sc / 2000 * 60), 7, "#93c5fd"); } }
       p.linha(40, p.y + 4, 555, p.y + 4, "#eeeeee"); p.y += 13;
     });
     // sustained load chart: each set's CPU and GPU speed over time, as % of its first sample
@@ -843,81 +843,81 @@
     }
     if (comp) { p.y += 8; p.espaco(14); p.txt(40, p.y, "Last column: difference of the last platform vs the first (green = better).", 8, false, "#666666"); }
     // embedded data: every set without the long logs
-    var dados = { kind: "inkbench-pdf", version: BENCH_VERSION, sets: S.map(function (s) { return { kind: "inkbench", version: s.version, date: s.date, label: s.label, info: s.info, metrics: s.metrics, scores: s.scores, series: s.series }; }) };
-    return p.bytes(dados);
+    var results = { kind: "inkbench-pdf", version: BENCH_VERSION, sets: S.map(function (s) { return { kind: "inkbench", version: s.version, date: s.date, label: s.label, info: s.info, metrics: s.metrics, scores: s.scores, series: s.series }; }) };
+    return p.bytes(results);
   }
 
-  function baixar(bytes, nome, tipo) {
-    var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bytes], { type: tipo })); a.download = nome;
+  function download(bytes, title, kind) {
+    var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bytes], { type: kind })); a.download = title;
     document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-    log("Saved " + nome + " (" + (bytes.length || bytes.size || 0) + " bytes)");
-    $("b-estado").textContent = "Saved " + nome;
+    log("Saved " + title + " (" + (bytes.length || bytes.size || 0) + " bytes)");
+    $("b-estado").textContent = "Saved " + title;
   }
   function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40); }
-  function textoLog() {
+  function logText() {
     return "InkDOS Hub browser benchmark log\nPage: " + location.href + "\nUser agent: " + navigator.userAgent + "\nSaved: " + new Date().toISOString() + "\n\n" +
       LOG.join("\n") + "\n\n--- RESULT JSON ---\n" + JSON.stringify(R, function (k, v) { return k === "log" ? undefined : v; }, 2) +
-      (OUTROS.length ? "\n\n--- LOADED FOR COMPARISON ---\n" + OUTROS.map(function (o) { return o.label; }).join("\n") : "");
+      (OTHERS.length ? "\n\n--- LOADED FOR COMPARISON ---\n" + OTHERS.map(function (o) { return o.label; }).join("\n") : "");
   }
 
-  async function carregar(f) {
+  async function loadFile(f) {
     log("Loading " + f.name + " (" + f.size + " bytes)");
     try {
       var buf = new Uint8Array(await f.arrayBuffer()), s = "";
       for (var i = 0; i < buf.length; i += 65536) s += String.fromCharCode.apply(null, buf.subarray(i, i + 65536));
-      var dados;
+      var results;
       var m = s.match(/%INKBENCH ([A-Za-z0-9+\/=]+)/);
-      if (m) dados = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
-      else if (/^\s*\{/.test(s)) dados = JSON.parse(decodeURIComponent(escape(s)));
+      if (m) results = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+      else if (/^\s*\{/.test(s)) results = JSON.parse(decodeURIComponent(escape(s)));
       else throw new Error("this file has no benchmark data (use a PDF saved by this page)");
-      var lista = dados.sets || [dados];
-      lista.forEach(function (x) { if (x && x.metrics) { x.label = x.label || f.name; OUTROS.push(x); log("  loaded set: " + x.label + " · " + x.date); } });
-      while (sets().length > 6) OUTROS.shift();
-      desenhar(); $("b-estado").textContent = "Loaded " + lista.length + " result(s) from " + f.name;
+      var list = results.sets || [results];
+      list.forEach(function (x) { if (x && x.metrics) { x.label = x.label || f.name; OTHERS.push(x); log("  loaded set: " + x.label + " · " + x.date); } });
+      while (sets().length > 6) OTHERS.shift();
+      paint(); $("b-estado").textContent = "Loaded " + list.length + " result(s) from " + f.name;
     } catch (e) { log("Load failed: " + err(e)); $("b-estado").textContent = "Could not read " + f.name + ": " + e.message; }
   }
 
   // ---------- wiring ----------
-  $("b-rodar").addEventListener("click", function () { rodar().catch(function (e) { log("FATAL " + err(e)); $("b-rodar").disabled = false; }); });
+  $("b-rodar").addEventListener("click", function () { runAll().catch(function (e) { log("FATAL " + err(e)); $("b-rodar").disabled = false; }); });
   $("b-stress").addEventListener("click", function () { stress(); });
-  $("b-reco").addEventListener("click", function () { reconhecidos().catch(function (e) { log("FATAL " + err(e)); }); });
+  $("b-reco").addEventListener("click", function () { known().catch(function (e) { log("FATAL " + err(e)); }); });
   // InkDOS Hub app (Windows / Linux): native benchmark of this PC, shown next to the browser result
   var NAT = window.inkHubNativo && window.inkHubNativo.bench;
   if (NAT) {
     $("b-nativo").hidden = $("b-nat-op").hidden = false;
     $("b-nativo").addEventListener("click", async function () {
-      var b = this; b.disabled = $("b-rodar").disabled = true; parar = false;
+      var b = this; b.disabled = $("b-rodar").disabled = true; stopping = false;
       log("== Native benchmark of this PC (" + (window.inkHubNativo.plataforma || "?") + ")");
       $("b-estado").textContent = "⏳ Native benchmark running (about 2 min, 7 with stress)...";
       var stop = function () { window.inkHubNativo.benchParar(); }; $("b-parar").hidden = false; $("b-parar").addEventListener("click", stop);
       try {
         var r = await window.inkHubNativo.bench({ stress: $("b-nat-stress").checked }, function (l) { log("  [native] " + l); $("b-estado").textContent = "⏳ " + l.replace(/^\[\s*[\d.]+s\]\s*/, "").slice(0, 90); });
-        if (r && r.resultado) { r.resultado.label = r.resultado.label || "Native"; OUTROS.unshift(r.resultado); while (sets().length > 6) OUTROS.pop(); $("b-estado").textContent = "✓ Native result added to the comparison: " + r.resultado.label; }
+        if (r && r.resultado) { r.resultado.label = r.resultado.label || "Native"; OTHERS.unshift(r.resultado); while (sets().length > 6) OTHERS.pop(); $("b-estado").textContent = "✓ Native result added to the comparison: " + r.resultado.label; }
         else $("b-estado").textContent = "Native benchmark failed: " + (r && r.erro || "?") + ". Download the log and send it.";
       } catch (e) { log("native: " + err(e)); $("b-estado").textContent = "Native benchmark failed: " + e.message; }
-      finally { b.disabled = $("b-rodar").disabled = false; $("b-parar").hidden = true; $("b-parar").removeEventListener("click", stop); desenhar(); }
+      finally { b.disabled = $("b-rodar").disabled = false; $("b-parar").hidden = true; $("b-parar").removeEventListener("click", stop); paint(); }
     });
   }
-  $("b-parar").addEventListener("click", function () { parar = true; $("b-estado").textContent = "Stopping after the current test..."; });
-  $("b-label").addEventListener("change", function () { if (R) { R.label = this.value.trim() || autoLabel(R.info); guardar(); desenhar(); } });
+  $("b-parar").addEventListener("click", function () { stopping = true; $("b-estado").textContent = "Stopping after the current test..."; });
+  $("b-label").addEventListener("change", function () { if (R) { R.label = this.value.trim() || autoLabel(R.info); store(); paint(); } });
   $("b-pdf").addEventListener("click", function () {
-    try { if (!R) return; R.label = $("b-label").value.trim() || R.label; baixar(pdfDe([R]), "benchmark-" + slug(R.label) + "-" + R.date.slice(0, 10) + ".pdf", "application/pdf"); }
+    try { if (!R) return; R.label = $("b-label").value.trim() || R.label; download(pdfOf([R]), "benchmark-" + slug(R.label) + "-" + R.date.slice(0, 10) + ".pdf", "application/pdf"); }
     catch (e) { log("PDF failed: " + err(e)); $("b-estado").textContent = "PDF failed: " + e.message; }
   });
   $("b-comp").addEventListener("click", function () {
-    try { var S = sets(); baixar(pdfDe(S), "benchmark-comparison-" + S.map(function (s) { return slug(s.label).slice(0, 14); }).join("-vs-") + ".pdf", "application/pdf"); }
+    try { var S = sets(); download(pdfOf(S), "benchmark-comparison-" + S.map(function (s) { return slug(s.label).slice(0, 14); }).join("-vs-") + ".pdf", "application/pdf"); }
     catch (e) { log("Comparison PDF failed: " + err(e)); $("b-estado").textContent = "PDF failed: " + e.message; }
   });
-  $("b-arquivo").addEventListener("change", async function () { for (var i = 0; i < this.files.length; i++) await carregar(this.files[i]); this.value = ""; });
-  $("b-limpar").addEventListener("click", function () { OUTROS.length = 0; desenhar(); });
+  $("b-arquivo").addEventListener("change", async function () { for (var i = 0; i < this.files.length; i++) await loadFile(this.files[i]); this.value = ""; });
+  $("b-limpar").addEventListener("click", function () { OTHERS.length = 0; paint(); });
   $("b-logcopiar").addEventListener("click", async function () {
-    try { await navigator.clipboard.writeText(textoLog()); $("b-estado").textContent = "Log copied."; } catch (e) { $("b-estado").textContent = "Copy failed: " + e.message; }
+    try { await navigator.clipboard.writeText(logText()); $("b-estado").textContent = "Log copied."; } catch (e) { $("b-estado").textContent = "Copy failed: " + e.message; }
   });
-  $("b-logbaixar").addEventListener("click", function () { baixar(new Blob([textoLog()]), "benchmark-log-" + new Date().toISOString().slice(0, 19).replace(/:/g, "") + ".txt", "text/plain"); });
+  $("b-logbaixar").addEventListener("click", function () { download(new Blob([logText()]), "benchmark-log-" + new Date().toISOString().slice(0, 19).replace(/:/g, "") + ".txt", "text/plain"); });
   try {
-    var ult = localStorage.getItem("inkbench-last");
-    if (ult) { R = JSON.parse(ult); LOG.push.apply(LOG, R.log || []); $("b-label").value = R.label || ""; $("b-estado").textContent = "Last result restored (" + String(R.date).slice(0, 16).replace("T", " ") + ")."; }
+    var last = localStorage.getItem("inkbench-last");
+    if (last) { R = JSON.parse(last); LOG.push.apply(LOG, R.log || []); $("b-label").value = R.label || ""; $("b-estado").textContent = "Last result restored (" + String(R.date).slice(0, 16).replace("T", " ") + ")."; }
   } catch (e) {}
-  desenhar();
+  paint();
   log("Benchmark page ready · v" + BENCH_VERSION);
 })();
